@@ -2,20 +2,12 @@ from flask import Flask, request, jsonify
 import os
 import psycopg2
 from dotenv import load_dotenv
+from flask_cors import CORS
 
 
 app = Flask(__name__)
 
-# Sample data (a list of items)
-items = [
-    {"id": 1, "name": "Quentin", "points": "4"},
-    {"id": 2, "name": "Younes", "points": "3"},
-    {"id": 3, "name": "Jules", "points": "2"}
-]
-
-
-
-
+CORS(app)
 
 @app.route('/items', methods=['GET'])
 def get_items():
@@ -26,7 +18,7 @@ def get_items():
 
     data = []
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM board;")
+        cur.execute("SELECT id, name, points FROM board ORDER BY points DESC;")
         rows = cur.fetchall()
 
         for row in rows:
