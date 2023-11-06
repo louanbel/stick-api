@@ -1,13 +1,48 @@
-from flask import Flask, request, jsonify
 import os
+
 import psycopg2
 from dotenv import load_dotenv
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-
 
 app = Flask(__name__)
 
 CORS(app)
+
+
+@app.route('/partialBoards', methods=['GET'])
+def get_board_list():
+    load_dotenv()
+    connection_string = os.getenv('DATABASE_URL')
+
+    conn = psycopg2.connect(connection_string)
+
+    data = []
+    with conn.cursor() as cur:
+        cur.execute("""
+        SELECT boards.id, boards.name, boards.endTime, COALESCE(COUNT(board.id), 0) AS participantCount
+        FROM boards
+        LEFT JOIN board ON boardId = boards.id
+        GROUP BY boards.id, boards.name, boards.endTime
+        ORDER BY endTime;
+        """)
+        rows = cur.fetchall()
+
+        for row in rows:
+            item = {
+                "id": row[0],
+                "name": row[1],
+                "endTime": row[2],
+                "participantCount": row[3]
+            }
+            data.append(item)
+
+    # Close the cursor and connection
+    cur.close()
+    conn.close()
+
+    return jsonify(data)
+
 
 @app.route('/items', methods=['GET'])
 def get_items():
@@ -34,6 +69,7 @@ def get_items():
     conn.close()
 
     return jsonify(data)
+
 
 @app.route('/items', methods=['PUT'])
 def update_items():
@@ -66,6 +102,7 @@ def update_items():
     conn.close()
 
     return jsonify({"message": "Data updated successfully"})
+
 
 @app.route('/items', methods=['POST'])
 def add_item():
@@ -100,6 +137,37 @@ def add_item():
     conn.close()
 
     return jsonify({"message": "Item added successfully with ID: {}".format(new_item_id)})
+
+
+@app.route('/items/<int:item_id>', methods=['DELETE'])
+def delete_item(item_id):
+    load_dotenv()
+    connection_string = os.getenv('DATABASE_URL')
+
+    conn = psycopg2.connect(connection_string)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM board WHERE id=%s RETURNING id;",
+            (item_id,)
+        )
+
+        # Get the ID of the deleted item, if any
+        deleted_item = cur.fetchone()
+
+        if deleted_item is not None:
+            deleted_item_id = deleted_item[0]
+            conn.commit()
+        else:
+            conn.rollback()
+            return jsonify({"message": "Item with ID {} not found or could not be deleted.".format(item_id)}), 404
+
+    # Close the cursor and connection
+    cur.close()
+    conn.close()
+
+    return jsonify({"message": "Item successfully deleted with ID: {}".format(deleted_item_id)})
+
 
 if __name__ == '__main__':
     app.run(debug=True)
