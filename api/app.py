@@ -10,6 +10,58 @@ app = Flask(__name__)
 CORS(app)
 
 
+@app.route('/board/<int:board_id>', methods=['GET'])
+def get_board(board_id):
+    load_dotenv()
+    connection_string = os.getenv('DATABASE_URL')
+
+    conn = psycopg2.connect(connection_string)
+
+    board_data = {}
+    participants = []
+
+    with conn.cursor() as cur:
+        cur.execute("""
+        SELECT id, name, endTime
+        FROM boards
+        WHERE id=%s
+        """, (board_id,))
+        board_row = cur.fetchone()
+
+        if board_row:
+            board_data["id"] = board_row[0]
+            board_data["name"] = board_row[1]
+            board_data["endTime"] = board_row[2]
+
+            cur.execute("""
+            SELECT id, name, points
+            FROM board
+            WHERE boardId=%s
+            ORDER BY points DESC;
+            """, (board_id,))
+
+            participant_rows = cur.fetchall()
+
+            for row in participant_rows:
+                participant = {
+                    "id": row[0],
+                    "name": row[1],
+                    "points": row[2],
+                }
+                participants.append(participant)
+
+    # Close the cursor and connection
+    cur.close()
+    conn.close()
+
+    board_data["participants"] = participants
+
+    # Close the cursor and connection
+    cur.close()
+    conn.close()
+
+    return jsonify(board_data)
+
 @app.route('/partialBoards', methods=['GET'])
 def get_board_list():
     load_dotenv()
@@ -71,8 +123,8 @@ def get_items():
     return jsonify(data)
 
 
-@app.route('/items', methods=['PUT'])
-def update_items():
+@app.route('/board/update-participants/<int:board_id>', methods=['PUT'])
+def update_items(board_id):
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
 
@@ -88,8 +140,8 @@ def update_items():
         for item in data:
             if "id" in item and "name" in item and "points" in item:
                 cur.execute(
-                    "UPDATE board SET name = %s, points = %s WHERE id = %s;",
-                    (item["name"], item["points"], item["id"])
+                    "UPDATE board SET name = %s, points = %s WHERE id = %s AND boardId = %s;",
+                    (item["name"], item["points"], item["id"], board_id)
                 )
             else:
                 return jsonify({"message": "Invalid data format in request"}), 400
@@ -104,8 +156,8 @@ def update_items():
     return jsonify({"message": "Data updated successfully"})
 
 
-@app.route('/items', methods=['POST'])
-def add_item():
+@app.route('/board/add-participant/<int:board_id>', methods=['POST'])
+def add_item(board_id):
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
 
@@ -122,8 +174,8 @@ def add_item():
 
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO board (name, points) VALUES (%s, %s) RETURNING id;",
-            (data["name"], data["points"])
+            "INSERT INTO board (name, points, boardId) VALUES (%s, %s, %s) RETURNING id;",
+            (data["name"], data["points"], board_id)
         )
 
         # Get the ID of the newly added item
@@ -139,17 +191,26 @@ def add_item():
     return jsonify({"message": "Item added successfully with ID: {}".format(new_item_id)})
 
 
-@app.route('/items/<int:item_id>', methods=['DELETE'])
-def delete_item(item_id):
+@app.route('/board/delete-participant/<int:board_id>', methods=['DELETE'])
+def delete_item(board_id):
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
 
     conn = psycopg2.connect(connection_string)
 
+    # Get the data to add from the request
+    data = request.get_json()
+
+    if not data:
+        return jsonify({"message": "No data provided in the request body"}), 400
+
+    if "id" not in data:
+        return jsonify({"message": "Invalid data format in request. 'id' fields are required."}), 400
+
     with conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM board WHERE id=%s RETURNING id;",
-            (item_id,)
+            "DELETE FROM board WHERE id=%s AND boardId=%s RETURNING id;",
+            (data["id"], board_id)
         )
 
         # Get the ID of the deleted item, if any
