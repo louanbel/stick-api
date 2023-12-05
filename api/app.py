@@ -10,7 +10,7 @@ app = Flask(__name__)
 CORS(app)
 
 
-@app.route('/board/<int:board_id>', methods=['GET'])
+@app.route('/boards/<int:board_id>', methods=['GET'])
 def get_board(board_id):
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
@@ -62,8 +62,35 @@ def get_board(board_id):
 
     return jsonify(board_data)
 
+@app.route('/boards/delete/<int:board_id>', methods=['DELETE'])
+def delete_board(board_id):
+    load_dotenv()
+    connection_string = os.getenv('DATABASE_URL')
+
+    conn = psycopg2.connect(connection_string)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM board WHERE boardId=%s;",
+            (board_id,)
+        )
+        cur.execute(
+            "DELETE FROM boards WHERE id=%s;",
+            (board_id,)
+        )
+
+        # Commit the changes to the database
+        conn.commit()
+
+    # Close the cursor and connection
+    cur.close()
+    conn.close()
+
+    return jsonify({"message": "Board successfully deleted with ID: {}".format(board_id)})
+
+
 @app.route('/partialBoards', methods=['GET'])
-def get_board_list():
+def get_partial_board_list():
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
 
@@ -96,35 +123,50 @@ def get_board_list():
     return jsonify(data)
 
 
-@app.route('/items', methods=['GET'])
-def get_items():
+@app.route('/board/create', methods=['POST'])
+def create_board():
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
 
+    # Get the data to create a new board from the request
+    data = request.get_json()
+
+    if not data:
+        return jsonify({"message": "No data provided in the request body"}), 400
+
+    if "name" not in data or "endTime" not in data:
+        return jsonify({"message": "Invalid data format in request. 'name' and 'endTime' fields are required."}), 400
+
     conn = psycopg2.connect(connection_string)
 
-    data = []
     with conn.cursor() as cur:
-        cur.execute("SELECT id, name, points FROM board ORDER BY points DESC;")
-        rows = cur.fetchall()
+        cur.execute(
+            "INSERT INTO boards (name, endTime) VALUES (%s, %s) RETURNING id, name, endTime;",
+            (data["name"], data["endTime"])
+        )
 
-        for row in rows:
-            item = {
-                "id": row[0],
-                "name": row[1],
-                "points": row[2]
-            }
-            data.append(item)
+        # Get the data of the newly added board
+        new_board_data = cur.fetchone()
+
+        # Commit the changes to the database
+        conn.commit()
 
     # Close the cursor and connection
     cur.close()
     conn.close()
 
-    return jsonify(data)
+    # Prepare the response data
+    response_data = {
+        "id": new_board_data[0],
+        "name": new_board_data[1],
+        "endTime": new_board_data[2],
+    }
+
+    return jsonify(response_data)
 
 
 @app.route('/board/update-participants/<int:board_id>', methods=['PUT'])
-def update_items(board_id):
+def update_board(board_id):
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
 
@@ -157,7 +199,7 @@ def update_items(board_id):
 
 
 @app.route('/board/add-participant/<int:board_id>', methods=['POST'])
-def add_item(board_id):
+def add_participant(board_id):
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
 
@@ -221,7 +263,7 @@ def delete_item(board_id):
             conn.commit()
         else:
             conn.rollback()
-            return jsonify({"message": "Item with ID {} not found or could not be deleted.".format(item_id)}), 404
+            return jsonify({"message": "Item with ID {} not found or could not be deleted.".format(board_id)}), 404
 
     # Close the cursor and connection
     cur.close()
