@@ -5,17 +5,16 @@ import psycopg2
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from flask_jwt_extended import create_access_token, JWTManager, get_jti, jwt_required, get_jwt
+from flask_jwt_extended import create_access_token, JWTManager, get_jti, jwt_required, get_jwt, get_jwt_identity
 from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
 
 CORS(app)
 
-app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')  # Changez ceci avec votre propre clé secrète
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
 
 jwt = JWTManager(app)
-
 
 
 @app.route('/boards/<int:board_id>', methods=['GET'])
@@ -72,32 +71,49 @@ def get_board(board_id):
     return jsonify(board_data)
 
 
+def get_user_id_from_board(board_id, cursor):
+    cursor.execute(
+        "SELECT userId FROM boards WHERE id=%s;",
+        (board_id,)
+    )
+    user_id = cursor.fetchone()
+
+    if user_id:
+        return user_id[0]
+    else:
+        return None
+
+
 @app.route('/boards/delete/<int:board_id>', methods=['DELETE'])
 @jwt_required()
 def delete_board(board_id):
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
 
+    user_id_from_jwt = get_jwt_identity()
+
     conn = psycopg2.connect(connection_string)
 
     with conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM board WHERE boardId=%s;",
-            (board_id,)
-        )
-        cur.execute(
-            "DELETE FROM boards WHERE id=%s;",
-            (board_id,)
-        )
+        user_id_from_board = get_user_id_from_board(board_id, cur)
 
-        # Commit the changes to the database
-        conn.commit()
+        if user_id_from_board == user_id_from_jwt:
+            cur.execute(
+                "DELETE FROM board WHERE boardId=%s;",
+                (board_id,)
+            )
+            cur.execute(
+                "DELETE FROM boards WHERE id=%s;",
+                (board_id,)
+            )
+            conn.commit()
 
-    # Close the cursor and connection
+            return jsonify({"message": "Board successfully deleted with ID: {}".format(board_id)})
+        else:
+            return jsonify({"message": "You are not allowed to delete this board"}), 403
+
     cur.close()
     conn.close()
-
-    return jsonify({"message": "Board successfully deleted with ID: {}".format(board_id)})
 
 
 @app.route('/partialBoards', methods=['GET'])
@@ -107,16 +123,17 @@ def get_partial_board_list():
     connection_string = os.getenv('DATABASE_URL')
 
     conn = psycopg2.connect(connection_string)
-
+    user_id = get_jwt_identity()
     data = []
     with conn.cursor() as cur:
         cur.execute("""
-        SELECT boards.id, boards.name, boards.endTime, COALESCE(COUNT(board.id), 0) AS participantCount
+        SELECT boards.id, boards.name, boards.endTime, COALESCE(COUNT(board.id), 0) AS participantCount, boards.userId
         FROM boards
         LEFT JOIN board ON boardId = boards.id
+        WHERE boards.userId = %s
         GROUP BY boards.id, boards.name, boards.endTime
         ORDER BY endTime;
-        """)
+        """, (user_id,))
         rows = cur.fetchall()
 
         for row in rows:
@@ -147,15 +164,18 @@ def create_board():
     if not data:
         return jsonify({"message": "No data provided in the request body"}), 400
 
+    user_id = get_jwt_identity()
+
     if "name" not in data or "endTime" not in data:
-        return jsonify({"message": "Invalid data format in request. 'name' and 'endTime' fields are required."}), 400
+        return jsonify(
+            {"message": "Invalid data format in request. 'name', 'endTime' fields are required."}), 400
 
     conn = psycopg2.connect(connection_string)
 
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO boards (name, endTime) VALUES (%s, %s) RETURNING id, name, endTime;",
-            (data["name"], data["endTime"])
+            "INSERT INTO boards (name, endTime, userId) VALUES (%s, %s, %s) RETURNING id, name, endTime, userId;",
+            (data["name"], data["endTime"], user_id)
         )
 
         # Get the data of the newly added board
@@ -173,6 +193,7 @@ def create_board():
         "id": new_board_data[0],
         "name": new_board_data[1],
         "endTime": new_board_data[2],
+        "userId": new_board_data[3],
     }
 
     return jsonify(response_data)
@@ -248,9 +269,9 @@ def add_participant(board_id):
     return jsonify({"message": "Item added successfully with ID: {}".format(new_item_id)})
 
 
-@app.route('/board/delete-participant/<int:board_id>', methods=['DELETE'])
+@app.route('/board/delete-participant/<int:participant_id>', methods=['DELETE'])
 @jwt_required()
-def delete_item(board_id):
+def delete_participant(participant_id):
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
 
@@ -267,8 +288,8 @@ def delete_item(board_id):
 
     with conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM board WHERE id=%s AND boardId=%s RETURNING id;",
-            (data["id"], board_id)
+            "DELETE FROM board WHERE id=%s RETURNING id;",
+            (participant_id,)
         )
 
         # Get the ID of the deleted item, if any
@@ -279,7 +300,7 @@ def delete_item(board_id):
             conn.commit()
         else:
             conn.rollback()
-            return jsonify({"message": "Item with ID {} not found or could not be deleted.".format(board_id)}), 404
+            return jsonify({"message": "Participant with ID {} not found or could not be deleted.".format(participant_id)}), 404
 
     # Close the cursor and connection
     cur.close()
@@ -290,12 +311,12 @@ def delete_item(board_id):
 
 @app.route('/login', methods=['POST'])
 def login():
-    email = request.json.get('email', None)
-    password = request.json.get('password', None)
+    email: str = request.json.get('email', None)
+    password: str = request.json.get('password', None)
+    user_id: int = get_user_id_by_email(email)
     print(email, password)
-    # Vérifie les identifiants de l'utilisateur
     if verify_user(email, password):
-        access_token = create_access_token(identity=email, expires_delta=datetime.timedelta(days=1))
+        access_token = create_access_token(identity=user_id, expires_delta=datetime.timedelta(days=1))
         return jsonify(access_token=access_token), 200
     else:
         return jsonify({"msg": "Mauvais nom d'utilisateur ou mot de passe"}), 401
@@ -327,6 +348,32 @@ def verify_user(email, password):
             conn.close()
 
     return False
+
+
+def get_user_id_by_email(email) -> int:
+    load_dotenv()
+    connection_string = os.getenv('DATABASE_URL')
+
+    conn = psycopg2.connect(connection_string)
+
+    try:
+        cur = conn.cursor()
+
+        cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+
+        user_id = cur.fetchone()
+        cur.close()
+
+        if user_id is not None:
+            return user_id[0]
+
+    except (Exception, psycopg2.DatabaseError) as error:
+        print(error)
+    finally:
+        if conn is not None:
+            conn.close()
+
+    return None
 
 
 @app.route('/register', methods=['POST'])
