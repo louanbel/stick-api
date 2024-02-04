@@ -1,11 +1,12 @@
 import datetime
+import json
 import os
 
 import psycopg2
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from flask_jwt_extended import create_access_token, JWTManager, get_jti, jwt_required, get_jwt, get_jwt_identity
+from flask_jwt_extended import create_access_token, JWTManager, jwt_required, get_jwt, get_jwt_identity
 from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
@@ -42,8 +43,8 @@ def get_board(board_id):
             board_data["endTime"] = board_row[2]
 
             cur.execute("""
-            SELECT id, name, points
-            FROM board
+            SELECT id, name, points, avatarSettings
+            FROM participants
             WHERE boardId=%s
             ORDER BY points DESC;
             """, (board_id,))
@@ -55,16 +56,15 @@ def get_board(board_id):
                     "id": row[0],
                     "name": row[1],
                     "points": row[2],
+                    "avatarSettings": row[3]
                 }
                 participants.append(participant)
 
-    # Close the cursor and connection
     cur.close()
     conn.close()
 
     board_data["participants"] = participants
 
-    # Close the cursor and connection
     cur.close()
     conn.close()
 
@@ -99,7 +99,7 @@ def delete_board(board_id):
 
         if user_id_from_board == user_id_from_jwt:
             cur.execute(
-                "DELETE FROM board WHERE boardId=%s;",
+                "DELETE FROM participants WHERE boardId=%s;",
                 (board_id,)
             )
             cur.execute(
@@ -127,9 +127,9 @@ def get_partial_board_list():
     data = []
     with conn.cursor() as cur:
         cur.execute("""
-        SELECT boards.id, boards.name, boards.endTime, COALESCE(COUNT(board.id), 0) AS participantCount, boards.userId
+        SELECT boards.id, boards.name, boards.endTime, COALESCE(COUNT(participants.id), 0) AS participantCount, boards.userId
         FROM boards
-        LEFT JOIN board ON boardId = boards.id
+        LEFT JOIN participants ON boardId = boards.id
         WHERE boards.userId = %s
         GROUP BY boards.id, boards.name, boards.endTime
         ORDER BY endTime;
@@ -145,7 +145,6 @@ def get_partial_board_list():
             }
             data.append(item)
 
-    # Close the cursor and connection
     cur.close()
     conn.close()
 
@@ -158,7 +157,6 @@ def create_board():
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
 
-    # Get the data to create a new board from the request
     data = request.get_json()
 
     if not data:
@@ -178,10 +176,8 @@ def create_board():
             (data["name"], data["endTime"], user_id)
         )
 
-        # Get the data of the newly added board
         new_board_data = cur.fetchone()
 
-        # Commit the changes to the database
         conn.commit()
 
     # Close the cursor and connection
@@ -205,7 +201,6 @@ def update_board(board_id):
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
 
-    # Get the data to update from the request
     data = request.get_json()
 
     if not data:
@@ -215,18 +210,17 @@ def update_board(board_id):
 
     with conn.cursor() as cur:
         for item in data:
-            if "id" in item and "name" in item and "points" in item:
+            if "id" in item and "name" in item and "points" in item and "avatar" in item:
+                avatar_settings = item.get("avatar", {}).get("settings", {})
                 cur.execute(
-                    "UPDATE board SET name = %s, points = %s WHERE id = %s AND boardId = %s;",
-                    (item["name"], item["points"], item["id"], board_id)
+                    "UPDATE participants SET name = %s, points = %s, avatarSettings = %s::jsonb WHERE id = %s AND boardId = %s;",
+                    (item["name"], item["points"], json.dumps(avatar_settings), item["id"], board_id)
                 )
             else:
                 return jsonify({"message": "Invalid data format in request"}), 400
 
-        # Commit the changes to the database
         conn.commit()
 
-    # Close the cursor and connection
     cur.close()
     conn.close()
 
@@ -239,7 +233,6 @@ def add_participant(board_id):
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
 
-    # Get the data to add from the request
     data = request.get_json()
 
     if not data:
@@ -250,19 +243,18 @@ def add_participant(board_id):
 
     conn = psycopg2.connect(connection_string)
 
+    avatar_settings = data.get("avatar", {}).get("settings", {})
+    print(json.dumps(avatar_settings))
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO board (name, points, boardId) VALUES (%s, %s, %s) RETURNING id;",
-            (data["name"], data["points"], board_id)
+            "INSERT INTO participants (name, points, boardId, avatarSettings) VALUES (%s, %s, %s, %s::jsonb) RETURNING id;",
+            (data["name"], data["points"], board_id, json.dumps(avatar_settings))
         )
 
-        # Get the ID of the newly added item
         new_item_id = cur.fetchone()[0]
 
-        # Commit the changes to the database
         conn.commit()
 
-    # Close the cursor and connection
     cur.close()
     conn.close()
 
@@ -277,22 +269,12 @@ def delete_participant(participant_id):
 
     conn = psycopg2.connect(connection_string)
 
-    # Get the data to add from the request
-    data = request.get_json()
-
-    if not data:
-        return jsonify({"message": "No data provided in the request body"}), 400
-
-    if "id" not in data:
-        return jsonify({"message": "Invalid data format in request. 'id' fields are required."}), 400
-
     with conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM board WHERE id=%s RETURNING id;",
+            "DELETE FROM participants WHERE id=%s RETURNING id;",
             (participant_id,)
         )
 
-        # Get the ID of the deleted item, if any
         deleted_item = cur.fetchone()
 
         if deleted_item is not None:
@@ -300,9 +282,9 @@ def delete_participant(participant_id):
             conn.commit()
         else:
             conn.rollback()
-            return jsonify({"message": "Participant with ID {} not found or could not be deleted.".format(participant_id)}), 404
+            return jsonify(
+                {"message": "Participant with ID {} not found or could not be deleted.".format(participant_id)}), 404
 
-    # Close the cursor and connection
     cur.close()
     conn.close()
 
@@ -381,11 +363,9 @@ def register():
     email: str = request.json.get('email')
     password: str = request.json.get('password')
 
-    # Vérifier si l'email ou le mot de passe n'est pas fourni
     if not email or not password:
         return jsonify({"msg": "Email and password are required"}), 400
 
-    # Connexion à la base de données
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
     conn = psycopg2.connect(connection_string)
@@ -393,15 +373,12 @@ def register():
     try:
         cur = conn.cursor()
 
-        # Vérifier si l'utilisateur existe déjà
         cur.execute("SELECT * FROM users WHERE email = %s", (email,))
         if cur.fetchone():
             return jsonify({"msg": "Email already used"}), 409
 
-        # Hacher le mot de passe avant de le stocker
         hashed_password = generate_password_hash(password, 'pbkdf2')
 
-        # Insérer le nouvel utilisateur dans la base de données
         cur.execute("INSERT INTO users (email, password) VALUES (%s, %s)", (email, hashed_password))
         conn.commit()
 
