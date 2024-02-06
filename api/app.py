@@ -224,7 +224,7 @@ def update_board(board_id):
     cur.close()
     conn.close()
 
-    return jsonify({"message": "Data updated successfully"})
+    return jsonify({"message": "Board updated successfully"})
 
 
 @app.route('/board/add-participant/<int:board_id>', methods=['POST'])
@@ -258,7 +258,7 @@ def add_participant(board_id):
     cur.close()
     conn.close()
 
-    return jsonify({"message": "Item added successfully with ID: {}".format(new_item_id)})
+    return jsonify({"id": new_item_id})
 
 
 @app.route('/board/delete-participant/<int:participant_id>', methods=['DELETE'])
