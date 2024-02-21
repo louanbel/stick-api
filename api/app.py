@@ -445,6 +445,24 @@ def logout():
         if conn is not None:
             conn.close()
 
+def health_check():
+    load_dotenv()
+    connection_string = os.getenv('DATABASE_URL')
+
+    conn = psycopg2.connect(connection_string)
+
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        cur.close()
+        return True
+    except (Exception, psycopg2.DatabaseError) as error:
+        print(error)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 if __name__ == '__main__':
     app.run(debug=True)
