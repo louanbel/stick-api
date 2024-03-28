@@ -12,3 +12,4 @@ SQLAlchemy==2.0.22
 typing_extensions==4.8.0
 Werkzeug==3.0.1
 zipp==3.17.0
+flask_jwt_extended==4.6.0
