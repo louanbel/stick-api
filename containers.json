@@ -1,0 +1,8 @@
+{
+  "stick": {
+    "image": ":stick-service.stick-container.6",
+    "ports": {
+      "5000": "HTTP"
+    }
+  }
+}
