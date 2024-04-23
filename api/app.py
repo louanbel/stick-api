@@ -232,7 +232,6 @@ def update_board(board_id):
 def add_participant(board_id):
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
-
     data = request.get_json()
 
     if not data:
@@ -243,12 +242,13 @@ def add_participant(board_id):
 
     conn = psycopg2.connect(connection_string)
 
+    user_id = get_jwt_identity()
     avatar_settings = data.get("avatar", {}).get("settings", {})
     print(json.dumps(avatar_settings))
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO participants (name, points, boardId, avatarSettings) VALUES (%s, %s, %s, %s::jsonb) RETURNING id;",
-            (data["name"], data["points"], board_id, json.dumps(avatar_settings))
+            "INSERT INTO participants (name, points, boardId, userid, avatarSettings) VALUES (%s, %s, %s, %s, %s::jsonb) RETURNING id;",
+            (data["name"], data["points"], board_id, user_id, json.dumps(avatar_settings))
         )
 
         new_item_id = cur.fetchone()[0]
@@ -289,6 +289,90 @@ def delete_participant(participant_id):
     conn.close()
 
     return jsonify({"message": "Item successfully deleted with ID: {}".format(deleted_item_id)})
+
+@app.route('/board/add-imported-participant/<int:board_id>', methods=['POST'])
+@jwt_required()
+def add_imported_participant(board_id):
+    load_dotenv()
+    connection_string = os.getenv('DATABASE_URL')
+
+    data = request.get_json()
+
+    if not data:
+        return jsonify({"message": "No data provided in the request body"}), 400
+
+    if "name" not in data and "avatar" not in data and "initialBoardId" not in data and "initialParticipantId" not in data:
+        return jsonify({"message": "Invalid data format in request. 'name', 'avatar', 'initialBoardId', 'initialParticipantId' fields are required."}), 400
+
+    conn = psycopg2.connect(connection_string)
+
+    avatar_settings = data.get("avatar", {}).get("settings", {})
+    initial_board_id = data.get("initialBoardId", None)
+    initial_participant_id = data.get("initialParticipantId", None)
+    name = data.get("name", None)
+    user_id = get_jwt_identity()
+    print("Adding imported participant with name: ", name, " and avatar settings: ", avatar_settings, " from board: ", initial_board_id, " and participant: ", initial_participant_id, " to board: ", board_id)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO participants (name, points, boardId, userid, avatarSettings, otherBoardsIds) VALUES (%s, %s, %s, %s, %s::jsonb, %s) RETURNING id;",
+            (name, 1, board_id, user_id, json.dumps(avatar_settings), [initial_board_id])
+        )
+
+        new_item_id = cur.fetchone()[0]
+
+        cur.execute(
+            "UPDATE participants SET otherBoardsIds = array_append(otherBoardsIds, %s) WHERE id = %s and boardId = %s;",
+            (board_id, initial_participant_id, initial_board_id)
+        )
+
+        conn.commit()
+
+    cur.close()
+    conn.close()
+
+    return jsonify({"id": new_item_id})
+
+@app.route('/allParticipants', methods=['POST'])
+@jwt_required()
+def get_all_participant_of_user():
+    load_dotenv()
+    connection_string = os.getenv('DATABASE_URL')
+    user_id_from_jwt = get_jwt_identity()
+    conn = psycopg2.connect(connection_string)
+    res = []
+    data = request.get_json()
+
+    if not data:
+        return jsonify({"message": "No data provided in the request body"}), 400
+
+    if "boardId" not in data:
+        return jsonify({"message": "Invalid data format in request. 'boardId' field is required."}), 400
+
+    board_id = data.get("boardId")
+    with conn.cursor() as cur:
+        print(user_id_from_jwt, board_id)
+        cur.execute("""
+        SELECT id, name, avatarSettings, boardId
+        FROM participants
+        WHERE userId = %s
+        AND boardId != %s
+        AND %s != ALL(otherBoardsIds)
+        ORDER BY points DESC;
+        """, (user_id_from_jwt, board_id, board_id))
+        rows = cur.fetchall()
+        for row in rows:
+            item = {
+                "id": row[0],
+                "name": row[1],
+                "avatarSettings": row[2],
+                "boardId": row[3]
+            }
+            res.append(item)
+
+    cur.close()
+    conn.close()
+
+    return jsonify(res)
 
 
 @app.route('/login', methods=['POST'])
