@@ -31,7 +31,7 @@ def get_board(board_id):
 
     with conn.cursor() as cur:
         cur.execute("""
-        SELECT id, name, endTime
+        SELECT id, name, endTime, pointstyle
         FROM boards
         WHERE id=%s
         """, (board_id,))
@@ -41,6 +41,7 @@ def get_board(board_id):
             board_data["id"] = board_row[0]
             board_data["name"] = board_row[1]
             board_data["endTime"] = board_row[2]
+            board_data["pointStyle"] = board_row[3]
 
             cur.execute("""
             SELECT id, name, points, avatarSettings
@@ -195,9 +196,63 @@ def create_board():
     return jsonify(response_data)
 
 
-@app.route('/board/update-participants/<int:board_id>', methods=['PUT'])
+@app.route('/board/<int:board_id>', methods=['PUT'])
 @jwt_required()
 def update_board(board_id):
+    load_dotenv()
+    connection_string = os.getenv('DATABASE_URL')
+
+    data = request.get_json()
+
+    user_id = get_jwt_identity()
+
+    if not data:
+        return jsonify({"message": "No data provided in the request body"}), 400
+
+    conn = psycopg2.connect(connection_string)
+
+    with conn.cursor() as cur:
+
+        cur.execute(
+            "SELECT userId FROM boards WHERE id=%s;",
+            (board_id,)
+        )
+        user_id_from_board = cur.fetchone()
+
+        if user_id_from_board is None:
+            return jsonify({"message": "Board not found"}), 404
+
+        if user_id_from_board[0] != user_id:
+            return jsonify({"message": "You are not allowed to update this board"}), 403
+
+        if "name" in data:
+            cur.execute(
+                "UPDATE boards SET name = %s WHERE id = %s;",
+                (data["name"], board_id)
+            )
+
+        if "endTime" in data:
+            cur.execute(
+                "UPDATE boards SET endTime = %s WHERE id = %s;",
+                (data["endTime"], board_id)
+            )
+
+        if "pointStyle" in data:
+            cur.execute(
+                "UPDATE boards SET pointStyle = %s WHERE id = %s;",
+                (data["pointStyle"], board_id)
+            )
+
+        conn.commit()
+
+    cur.close()
+    conn.close()
+
+    return jsonify({"message": "Board updated successfully"})
+
+@app.route('/board/update-participants/<int:board_id>', methods=['PUT'])
+@jwt_required()
+def update_board_participants(board_id):
     load_dotenv()
     connection_string = os.getenv('DATABASE_URL')
 
